@@ -1,12 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"net/http"
-
 	"github.com/gin-gonic/gin"
+	"golang.org/x/net/html"
+	"io/ioutil"
+	"log"
+	"net/http"
+	"strings"
 )
 
 func main() {
@@ -30,10 +34,20 @@ func main() {
 		}
 		defer resp.Body.Close()
 
-		c.DataFromReader(resp.StatusCode, resp.ContentLength, resp.Header.Get("Content-Type"), resp.Body, nil)
+		body, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read response body"})
+			return
+		}
+
+		newBody := rewriteLinks(body, host)
+		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), newBody)
 	})
 
-	r.Run()
+	certFile := "/etc/letsencrypt/live/tacosync.io/fullchain.pem"
+	keyFile := "/etc/letsencrypt/live/tacosync.io/privkey.pem"
+
+	log.Fatal(r.RunTLS(":443", certFile, keyFile))
 }
 
 func generateUUID() (string, error) {
@@ -44,3 +58,48 @@ func generateUUID() (string, error) {
 	}
 	return hex.EncodeToString(buffer), nil
 }
+
+func rewriteLinks(body []byte, host string) []byte {
+	doc, err := html.Parse(bytes.NewReader(body))
+	if err != nil {
+		return body
+	}
+
+	var f func(*html.Node)
+	f = func(n *html.Node) {
+		if n.Type == html.ElementNode {
+			// Consider 'a', 'link', and 'script' tags
+			if n.Data == "a" || n.Data == "link" || n.Data == "script" {
+				rewriteAttributes(n, host)
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			f(c)
+		}
+	}
+
+	f(doc)
+
+	var buf bytes.Buffer
+	html.Render(&buf, doc)
+	return buf.Bytes()
+}
+
+func rewriteAttributes(n *html.Node, host string) {
+	attributes := []string{"href", "src"}
+	for i, a := range n.Attr {
+		for _, attr := range attributes {
+			if a.Key == attr {
+				// Rewrite absolute URLs
+				if strings.HasPrefix(a.Val, "https://") || strings.HasPrefix(a.Val, "http://") {
+					n.Attr[i].Val = strings.Replace(a.Val, "https://", fmt.Sprintf("https://%s/", host), 1)
+					n.Attr[i].Val = strings.Replace(a.Val, "http://", fmt.Sprintf("http://%s/", host), 1)
+				} else if !strings.HasPrefix(a.Val, "data:") && !strings.HasPrefix(a.Val, "javascript:") {
+					// Prepend the host to relative URLs
+					n.Attr[i].Val = fmt.Sprintf("https://%s%s", host, a.Val)
+				}
+			}
+		}
+	}
+}
+
