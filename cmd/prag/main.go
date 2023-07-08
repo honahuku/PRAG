@@ -1,105 +1,46 @@
 package main
 
 import (
-	"bytes"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"github.com/gin-gonic/gin"
-	"golang.org/x/net/html"
-	"io/ioutil"
-	"log"
 	"net/http"
 	"strings"
 )
 
 func main() {
+	certFile := "/etc/letsencrypt/live/misskey.sda1.net.prag.social/fullchain.pem"
+	keyFile := "/etc/letsencrypt/live/misskey.sda1.net.prag.social/privkey.pem"
+
 	r := gin.Default()
 
-	r.GET("/:host/auth/sign_in", func(c *gin.Context) {
-		host := c.Param("host")
-
-		uuid, err := generateUUID()
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate UUID"})
+	r.Use(func(c *gin.Context) {
+		host := c.Request.Host
+		hostParts := strings.Split(host, ".")
+		if len(hostParts) < 3 {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"message": "Invalid host",
+			})
 			return
 		}
+		
+		subdomainParts := hostParts[:len(hostParts)-2]
+		subdomain := strings.Join(subdomainParts, ".")
+		
 
-		targetURL := fmt.Sprintf("https://%s/miauth/%s?name=PRAG&permission=read:account,write:notes", host, uuid)
-
-		resp, err := http.Get(targetURL)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch data"})
-			return
+		// 暫定的にすべてのリクエストがMastdonクライアントからMisskeyサーバーへのリクエストだとする
+		// TODO: サーバーがどのActivityPub実装なのかを判定する必要がある
+		// 暫定的にりなっくすきーでテストをしている
+		// TODO: インスタンス追加の処理が外部から出来るようにする
+		if subdomain == "misskey.sda1.net" {
+			c.JSON(http.StatusOK, gin.H{
+				"message": fmt.Sprintf("This request would be forwarded to %s server", subdomain),
+			})			
+		} else {
+			c.JSON(http.StatusNotFound, gin.H{
+				"message": subdomain,
+			})
 		}
-		defer resp.Body.Close()
-
-		body, err := ioutil.ReadAll(resp.Body)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read response body"})
-			return
-		}
-
-		newBody := rewriteLinks(body, host)
-		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), newBody)
 	})
 
-	certFile := "/etc/letsencrypt/live/tacosync.io/fullchain.pem"
-	keyFile := "/etc/letsencrypt/live/tacosync.io/privkey.pem"
-
-	log.Fatal(r.RunTLS(":443", certFile, keyFile))
+	r.RunTLS(":443", certFile, keyFile)
 }
-
-func generateUUID() (string, error) {
-	buffer := make([]byte, 16)
-	_, err := rand.Read(buffer)
-	if err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(buffer), nil
-}
-
-func rewriteLinks(body []byte, host string) []byte {
-	doc, err := html.Parse(bytes.NewReader(body))
-	if err != nil {
-		return body
-	}
-
-	var f func(*html.Node)
-	f = func(n *html.Node) {
-		if n.Type == html.ElementNode {
-			// Consider 'a', 'link', and 'script' tags
-			if n.Data == "a" || n.Data == "link" || n.Data == "script" {
-				rewriteAttributes(n, host)
-			}
-		}
-		for c := n.FirstChild; c != nil; c = c.NextSibling {
-			f(c)
-		}
-	}
-
-	f(doc)
-
-	var buf bytes.Buffer
-	html.Render(&buf, doc)
-	return buf.Bytes()
-}
-
-func rewriteAttributes(n *html.Node, host string) {
-	attributes := []string{"href", "src"}
-	for i, a := range n.Attr {
-		for _, attr := range attributes {
-			if a.Key == attr {
-				// Rewrite absolute URLs
-				if strings.HasPrefix(a.Val, "https://") || strings.HasPrefix(a.Val, "http://") {
-					n.Attr[i].Val = strings.Replace(a.Val, "https://", fmt.Sprintf("https://%s/", host), 1)
-					n.Attr[i].Val = strings.Replace(a.Val, "http://", fmt.Sprintf("http://%s/", host), 1)
-				} else if !strings.HasPrefix(a.Val, "data:") && !strings.HasPrefix(a.Val, "javascript:") {
-					// Prepend the host to relative URLs
-					n.Attr[i].Val = fmt.Sprintf("https://%s%s", host, a.Val)
-				}
-			}
-		}
-	}
-}
-
