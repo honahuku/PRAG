@@ -5,6 +5,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"net/http"
 	"strings"
+	"github.com/honahuku/prag/pkg/api/misskey"
 )
 
 func main() {
@@ -31,15 +32,19 @@ func main() {
 		// TODO: サーバーがどのActivityPub実装なのかを判定する必要がある
 		// 暫定的にりなっくすきーでテストをしている
 		// TODO: インスタンス追加の処理が外部から出来るようにする
+		// インスタンス情報とかを同一インスタンス内にredisを立ててそこから取る？
 		if subdomain == "misskey.sda1.net" {
+			misskeyClient := misskey.NewMisskeyClient(subdomain)
+			r.GET("/auth/sign_in", misskeyClient.SignInHandler())
+		
 			c.JSON(http.StatusOK, gin.H{
 				"message": fmt.Sprintf("This request would be forwarded to %s server", subdomain),
-			})			
+			})
 		} else {
 			c.JSON(http.StatusNotFound, gin.H{
-				"message": subdomain,
+				"message": "Invalid subdomain",
 			})
-		}
+		}	
 	})
 
 	r.RunTLS(":443", certFile, keyFile)
